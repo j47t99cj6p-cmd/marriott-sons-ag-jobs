@@ -1,95 +1,33 @@
-const K={jobs:'ms_jobs',customers:'ms_customers',employees:'ms_employees'};
-const get=k=>JSON.parse(localStorage.getItem(K[k])||'[]'), put=(k,v)=>localStorage.setItem(K[k],JSON.stringify(v));
-let tab='home';
-
-function render(){
- document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
- const a=document.getElementById('app');
- if(tab==='home')home(a); if(tab==='jobs')jobs(a); if(tab==='customers')customers(a); if(tab==='employees')employees(a); if(tab==='reports')reports(a)
-}
+const SUPABASE_URL='https://zswefoyatbhbovwfaxvc.supabase.co';
+const SUPABASE_KEY='sb_publishable_WISavQH3caOp0zRNbm3b3Q_3daOh0Pz';
+let db,user,profile,tab='home',jobsCache=[],customersCache=[],employeesCache=[];
+const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const num=(v,d=0)=>Number.isFinite(Number(v))?Number(v):d;
+const fmtHours=h=>{if(!h)return '0h';const n=Math.floor(h),m=Math.round((h-n)*60);return `${n}h ${m}m`};
+const jobHours=x=>x.start_time&&x.finish_time?Math.max(0,(new Date(x.finish_time)-new Date(x.start_time))/3600000):0;
+const sum=(a,k)=>a.reduce((n,x)=>n+num(x[k]),0);
+const isManager=()=>profile?.role==='manager';
+const showMsg=(text,type='error')=>{document.getElementById('msg')?.remove();const d=document.createElement('div');d.id='msg';d.className=type;d.textContent=text;document.getElementById('app').prepend(d)};
+const setBusy=b=>document.querySelectorAll('button').forEach(x=>x.disabled=b);
+async function boot(){const mod=await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');db=mod.createClient(SUPABASE_URL,SUPABASE_KEY);db.auth.onAuthStateChange(async(_e,s)=>{user=s?.user||null;if(user)await loadProfile();else showAuth()});const {data:{session}}=await db.auth.getSession();user=session?.user||null;if(user)await loadProfile();else showAuth()}
+async function loadProfile(){let r=await db.from('profiles').select('*').eq('id',user.id).maybeSingle();if(r.error){showMsg(r.error.message);return}if(!r.data){const name=user.user_metadata?.full_name||user.email?.split('@')[0]||'Employee';const p=await db.rpc('ensure_my_profile',{p_name:name});if(p.error){showMsg(p.error.message);return}profile=p.data}else profile=r.data;document.getElementById('tabs').style.display='flex';renderTabs();await loadData();render()}
+function renderTabs(){document.querySelectorAll('.tabs button').forEach(b=>b.style.display=(!isManager()&&['customers','employees'].includes(b.dataset.tab))?'none':'')}
+function showAuth(){document.getElementById('tabs').style.display='none';document.getElementById('app').innerHTML=`<div class="card auth"><h2>Marriott & Sons AG Jobs</h2><p class="muted">Sign in to record and manage jobs.</p><label>Email</label><input id="email" type="email" autocomplete="email" placeholder="you@example.com"><label>Password</label><input id="password" type="password" autocomplete="current-password" placeholder="Password"><label>Your name (new account only)</label><input id="fullname" placeholder="Full name"><button class="primary" onclick="signIn()">Sign in</button><div style="height:8px"></div><button class="secondary" style="width:100%" onclick="signUp()">Create account</button><p class="muted small">The first account created is the manager account. Later accounts are employees.</p></div>`}
+async function signIn(){setBusy(true);const r=await db.auth.signInWithPassword({email:email.value.trim(),password:password.value});setBusy(false);if(r.error)showMsg(r.error.message)}
+async function signUp(){const e=email.value.trim(),p=password.value,n=fullname.value.trim();if(!e||!p){showMsg('Enter an email and password.');return}setBusy(true);const r=await db.auth.signUp({email:e,password:p,options:{data:{full_name:n||e.split('@')[0]}}});setBusy(false);if(r.error){showMsg(r.error.message);return}if(r.data.session)showMsg('Account created.','success');else showMsg('Account created. Check your email to confirm it, then sign in.','success')}
+async function logout(){await db.auth.signOut()}
+async function loadData(){const jr=await db.from('jobs').select('*').order('created_at',{ascending:false});if(jr.error){showMsg(jr.error.message);return}jobsCache=jr.data||[];const cr=await db.from('customers').select('*').order('name');if(cr.error){showMsg(cr.error.message);return}customersCache=cr.data||[];if(isManager()){const er=await db.from('profiles').select('id,full_name,role').eq('role','employee').order('full_name');if(er.error){showMsg(er.error.message);return}employeesCache=er.data||[]}else employeesCache=[profile]}
+function render(){document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));const a=document.getElementById('app');if(!user){showAuth();return}if(tab==='home')home(a);if(tab==='jobs')jobs(a);if(tab==='customers')customers(a);if(tab==='employees')employees(a);if(tab==='reports')reports(a)}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;render()});
-
-function sum(arr,k){return arr.reduce((n,x)=>n+(Number(x[k])||0),0)}
-function hours(x){
- if(!x.start||!x.finish)return 0;
- const s=new Date(x.start), f=new Date(x.finish);
- return Math.max(0,(f-s)/3600000);
-}
-function fmtHours(n){return n?`${Math.floor(n)}h ${Math.round((n%1)*60)}m`:'0h'}
-function jobCard(x){
- return `<div class="card">
- <div class="row"><b>${esc(x.title)}</b><button class="danger" onclick="delJob('${x.id}')">Delete</button></div>
- <div>${esc(x.customer)} Â· ${esc(x.employee)}</div>
- <div class="muted">${new Date(x.date).toLocaleDateString('en-GB')} Â· ${x.acreage||0} acres Â· ${x.loads||0} loads Â· ${x.bales||0} bales Â· ${x.fuel||0} L</div>
- <div class="muted">Start ${x.start?new Date(x.start).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'â'} Â· Finish ${x.finish?new Date(x.finish).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'â'} Â· ${fmtHours(hours(x))}</div>
- ${x.work?`<p><b>Work:</b> ${esc(x.work)}</p>`:''}
- ${x.extras?`<p><b>Extras:</b> ${esc(x.extras)}</p>`:''}
- </div>`
-}
-function home(a){
- const j=get('jobs'),today=new Date().toDateString(),t=j.filter(x=>new Date(x.date).toDateString()===today);
- a.innerHTML=`<div class="card"><h2>Dashboard</h2><p class="muted">Track your agricultural work in one place.</p>
- <div class="grid">
- <div class="card"><div class="stat">${t.length}</div><div class="muted">Today's jobs</div></div>
- <div class="card"><div class="stat">${sum(t,'acreage').toFixed(1)}</div><div class="muted">Acres today</div></div>
- <div class="card"><div class="stat">${sum(t,'loads')}</div><div class="muted">Loads today</div></div>
- <div class="card"><div class="stat">${sum(t,'bales')}</div><div class="muted">Bales today</div></div>
- <div class="card"><div class="stat">${sum(t,'fuel').toFixed(0)} L</div><div class="muted">Fuel today</div></div>
- <div class="card"><div class="stat">${fmtHours(t.reduce((n,x)=>n+hours(x),0))}</div><div class="muted">Hours today</div></div>
- </div>
- <button class="primary" onclick="tab='jobs';render();setTimeout(()=>document.getElementById('newJob').scrollIntoView(),50)">+ New Job</button></div>
- <div class="card"><h3>Recent jobs</h3>${j.length?j.slice(-5).reverse().map(jobCard).join(''):'<div class="empty">No jobs recorded yet.</div>'}</div>`
-}
-function jobs(a){
- const j=get('jobs'),cs=get('customers'),es=get('employees');
- const now=new Date(); const local=new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,16);
- a.innerHTML=`<div class="card" id="newJob"><h2>New Job</h2>
- <label>Date</label><input id="date" type="date" value="${local.slice(0,10)}">
- <label>Job / work type</label><input id="title" placeholder="e.g. Baling, drilling, carting">
- <label>Customer</label><select id="customer"><option value="">Select customer</option>${cs.map(x=>`<option>${esc(x.name)}</option>`).join('')}</select>
- <label>Employee</label><select id="employee"><option value="">Select employee</option>${es.map(x=>`<option>${esc(x.name)}</option>`).join('')}</select>
- <label>Start time</label><input id="startTime" type="time">
- <label>Finish time</label><input id="finishTime" type="time">
- <label>Acreage</label><input id="acreage" type="number" step="0.1" placeholder="0">
- <label>Fuel used (litres)</label><input id="fuel" type="number" step="0.1" placeholder="0">
- <label>Loads</label><input id="loads" type="number" step="1" placeholder="0">
- <label>Bale count</label><input id="bales" type="number" step="1" placeholder="0">
- <label>Work carried out</label><textarea id="work" rows="3" placeholder="Describe the main work"></textarea>
- <label>Extras / additional work</label><textarea id="extras" rows="3" placeholder="Type any extras or additional work done"></textarea>
- <button class="primary" onclick="saveJob()">Save Job</button></div>
- <h2>Job History</h2>${j.length?j.slice().reverse().map(jobCard).join(''):'<div class="card empty">No jobs recorded yet.</div>'}`
-}
-function saveJob(){
- const d=date.value;
- const mk=(t)=>t?`${d}T${t}`:'';
- const x={id:Date.now().toString(),date:d,title:title.value||'Job',customer:customer.value,employee:employee.value,
- start:mk(startTime.value),finish:mk(finishTime.value),acreage:+acreage.value||0,fuel:+fuel.value||0,
- loads:+loads.value||0,bales:+bales.value||0,work:work.value,extras:extras.value};
- if(!x.customer||!x.employee){alert('Please select a customer and employee.');return}
- if(x.start&&x.finish&&new Date(x.finish)<new Date(x.start)){alert('Finish time cannot be before start time.');return}
- const j=get('jobs');j.push(x);put('jobs',j);alert('Job saved');render()
-}
-function delJob(id){put('jobs',get('jobs').filter(x=>x.id!==id));render()}
-
-function customers(a){const cs=get('customers');a.innerHTML=`<div class="card"><h2>Customers</h2><label>Customer name</label><input id="cname" placeholder="Customer name"><label>Contact / phone</label><input id="cphone" placeholder="Optional"><button class="primary" onclick="addCustomer()">Add Customer</button></div>${cs.length?cs.map((x,i)=>`<div class="card row"><div><b>${esc(x.name)}</b><div class="muted">${esc(x.phone||'')}</div></div><button class="danger" onclick="delCustomer(${i})">Delete</button></div>`).join(''):'<div class="card empty">No customers yet.</div>`}
-function addCustomer(){if(!cname.value.trim())return;const x=get('customers');x.push({name:cname.value.trim(),phone:cphone.value.trim()});put('customers',x);render()}
-function delCustomer(i){const x=get('customers');x.splice(i,1);put('customers',x);render()}
-
-function employees(a){const es=get('employees');a.innerHTML=`<div class="card"><h2>Employees</h2><label>Employee name</label><input id="ename" placeholder="Employee name"><label>Phone</label><input id="ephone" placeholder="Optional"><button class="primary" onclick="addEmployee()">Add Employee</button></div>${es.length?es.map((x,i)=>`<div class="card row"><div><b>${esc(x.name)}</b><div class="muted">${esc(x.phone||'')}</div></div><button class="danger" onclick="delEmployee(${i})">Delete</button></div>`).join(''):'<div class="card empty">No employees yet.</div>`}
-function addEmployee(){if(!ename.value.trim())return;const x=get('employees');x.push({name:ename.value.trim(),phone:ephone.value.trim()});put('employees',x);render()}
-function delEmployee(i){const x=get('employees');x.splice(i,1);put('employees',x);render()}
-
-function reports(a){
- const j=get('jobs'),totalHours=j.reduce((n,x)=>n+hours(x),0);
- a.innerHTML=`<div class="card"><h2>Reports</h2><div class="grid">
- <div class="card"><div class="stat">${j.length}</div><div class="muted">Jobs</div></div>
- <div class="card"><div class="stat">${sum(j,'acreage').toFixed(1)}</div><div class="muted">Total acres</div></div>
- <div class="card"><div class="stat">${sum(j,'loads')}</div><div class="muted">Total loads</div></div>
- <div class="card"><div class="stat">${sum(j,'bales')}</div><div class="muted">Total bales</div></div>
- <div class="card"><div class="stat">${sum(j,'fuel').toFixed(1)} L</div><div class="muted">Total fuel</div></div>
- <div class="card"><div class="stat">${fmtHours(totalHours)}</div><div class="muted">Total hours</div></div>
- </div></div>`
-}
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
-render();
-
+function header(title,sub=''){return `<div class="card"><button class="secondary logout" onclick="logout()">Sign out</button><h2>${esc(title)}</h2><p class="muted">${esc(sub)}</p><span class="small">${esc(profile?.full_name||user.email)} Â· ${esc(profile?.role||'employee')}</span></div>`}
+function jobCard(x){return `<div class="card"><div class="row"><b>${esc(x.customer_name||'No customer')}</b>${isManager()||x.employee_id===user.id?`<button class="danger" onclick="deleteJob(${x.id})">Delete</button>`:''}</div><div class="muted">${esc(x.work||'Job')} Â· ${x.start_time?new Date(x.start_time).toLocaleDateString('en-GB'):'No date'}</div><div class="muted">${num(x.acreage).toFixed(1)} acres Â· ${num(x.loads)} loads Â· ${num(x.bales)} bales Â· ${num(x.fuel_litres).toFixed(1)} L</div><div class="muted">${x.start_time?new Date(x.start_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'â'} â ${x.finish_time?new Date(x.finish_time).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'â'} Â· ${fmtHours(jobHours(x))}</div>${x.extras?`<p><b>Extras:</b> ${esc(x.extras)}</p>`:''}</div>`}
+function home(a){const today=new Date().toDateString(),t=jobsCache.filter(x=>x.start_time&&new Date(x.start_time).toDateString()===today);a.innerHTML=header('Dashboard',isManager()?'Manager overview':'Your jobs')+`<div class="card"><div class="grid"><div class="card"><div class="stat">${t.length}</div><div class="muted">Today's jobs</div></div><div class="card"><div class="stat">${sum(t,'acreage').toFixed(1)}</div><div class="muted">Acres</div></div><div class="card"><div class="stat">${sum(t,'loads')}</div><div class="muted">Loads</div></div><div class="card"><div class="stat">${sum(t,'bales')}</div><div class="muted">Bales</div></div><div class="card"><div class="stat">${sum(t,'fuel_litres').toFixed(0)} L</div><div class="muted">Fuel</div></div><div class="card"><div class="stat">${fmtHours(t.reduce((n,x)=>n+jobHours(x),0))}</div><div class="muted">Hours</div></div></div><button class="primary" onclick="tab='jobs';render();setTimeout(()=>document.getElementById('newJob')?.scrollIntoView(),50)">+ New Job</button></div><h3>Recent jobs</h3>${jobsCache.length?jobsCache.slice(0,5).map(jobCard).join(''):'<div class="card empty">No jobs recorded yet.</div>'}`}
+function jobs(a){const cs=customersCache,es=employeesCache,d=new Date().toISOString().slice(0,10);a.innerHTML=header('Jobs','Record work, fuel, acreage and loads')+`<div class="card" id="newJob"><label>Date</label><input id="jdate" type="date" value="${d}"><label>Job / work type</label><input id="jwork" placeholder="Baling, drilling, carting..."><label>Customer</label><select id="jcustomer"><option value="">Select customer</option>${cs.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>${isManager()?`<label>Employee</label><select id="jemployee"><option value="">Select employee</option>${es.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('')}</select>`:''}<label>Start time</label><input id="jstart" type="time"><label>Finish time</label><input id="jfinish" type="time"><label>Acreage</label><input id="jacres" type="number" step="0.1" placeholder="0"><label>Fuel used (litres)</label><input id="jfuel" type="number" step="0.1" placeholder="0"><label>Loads</label><input id="jloads" type="number" step="1" placeholder="0"><label>Bale count</label><input id="jbales" type="number" step="1" placeholder="0"><label>Work carried out</label><textarea id="jworkdetail" rows="3" placeholder="Describe the work"></textarea><label>Extras / additional work</label><textarea id="jextras" rows="3" placeholder="Anything else done"></textarea><button class="primary" onclick="saveJob()">Save Job</button></div><h3>Job history</h3>${jobsCache.length?jobsCache.map(jobCard).join(''):'<div class="card empty">No jobs recorded yet.</div>'}`}
+async function saveJob(){const customerId=Number(jcustomer.value)||null,customer=customersCache.find(x=>x.id===customerId),employeeId=isManager()?jemployee.value:user.id;if(!customerId||!employeeId){showMsg('Select a customer and employee.');return}const d=jdate.value,start=jstart.value?`${d}T${jstart.value}:00`:null,finish=jfinish.value?`${d}T${jfinish.value}:00`:null;if(start&&finish&&new Date(finish)<new Date(start)){showMsg('Finish time cannot be before start time.');return}setBusy(true);const r=await db.from('jobs').insert({employee_id:employeeId,customer_id:customerId,customer_name:customer.name,start_time:start,finish_time:finish,acreage:num(jacres.value),fuel_litres:num(jfuel.value),loads:Math.round(num(jloads.value)),bales:Math.round(num(jbales.value)),work:jwork.value.trim()||jworkdetail.value.trim(),extras:jextras.value.trim()});setBusy(false);if(r.error){showMsg(r.error.message);return}await loadData();showMsg('Job saved.','success');render()}
+async function deleteJob(id){if(!confirm('Delete this job?'))return;const r=await db.from('jobs').delete().eq('id',id);if(r.error){showMsg(r.error.message);return}await loadData();render()}
+function customers(a){a.innerHTML=header('Customers','Add and manage customers')+`<div class="card"><label>Customer name</label><input id="cname" placeholder="Customer name"><button class="primary" onclick="addCustomer()">Add Customer</button></div>${customersCache.length?customersCache.map(x=>`<div class="card row"><b>${esc(x.name)}</b><button class="danger" onclick="deleteCustomer(${x.id})">Delete</button></div>`).join(''):'<div class="card empty">No customers yet.</div>'}`}
+async function addCustomer(){const n=cname.value.trim();if(!n){showMsg('Enter a customer name.');return}setBusy(true);const r=await db.from('customers').insert({name:n});setBusy(false);if(r.error){showMsg(r.error.message);return}await loadData();render()}
+async function deleteCustomer(id){if(!confirm('Delete this customer?'))return;const r=await db.from('customers').delete().eq('id',id);if(r.error){showMsg(r.error.message);return}await loadData();render()}
+function employees(a){a.innerHTML=header('Employees','Employee accounts')+`<div class="notice">Employees create their own login accounts. The first account created is the manager account.</div>${employeesCache.length?employeesCache.map(x=>`<div class="card"><b>${esc(x.full_name||'Employee')}</b><div class="muted">Employee account</div></div>`).join(''):'<div class="card empty">No employee accounts yet.</div>'}`}
+function reports(a){const totalHours=jobsCache.reduce((n,x)=>n+jobHours(x),0);a.innerHTML=header('Reports','Totals for jobs you can access')+`<div class="card"><div class="grid"><div class="card"><div class="stat">${jobsCache.length}</div><div class="muted">Jobs</div></div><div class="card"><div class="stat">${sum(jobsCache,'acreage').toFixed(1)}</div><div class="muted">Acres</div></div><div class="card"><div class="stat">${sum(jobsCache,'loads')}</div><div class="muted">Loads</div></div><div class="card"><div class="stat">${sum(jobsCache,'bales')}</div><div class="muted">Bales</div></div><div class="card"><div class="stat">${sum(jobsCache,'fuel_litres').toFixed(1)} L</div><div class="muted">Fuel</div></div><div class="card"><div class="stat">${fmtHours(totalHours)}</div><div class="muted">Hours</div></div></div></div>`}
+boot();
